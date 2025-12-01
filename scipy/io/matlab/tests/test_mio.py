@@ -1397,3 +1397,60 @@ def test_corrupt_files():
     with pytest.raises(MatReadError,
                        match="Mat file appears to be corrupt"):
         loadmat(BytesIO(b'\x00' * 20))
+
+
+def test_parse_function_workspace():
+    # Test parsing of __function_workspace__
+    # Use parabola.mat which contains an anonymous function with workspace
+    fname = pjoin(test_data_path, 'parabola.mat')
+    
+    # First, test that without parsing, we get raw bytes
+    data_no_parse = loadmat(fname, parse_function_workspace=False)
+    assert '__function_workspace__' in data_no_parse
+    assert data_no_parse['__function_workspace__'].dtype == np.uint8
+    
+    # Now test with parsing enabled
+    data_parsed = loadmat(fname, parse_function_workspace=True)
+    
+    # Should still have the raw workspace
+    assert '__function_workspace__' in data_parsed
+    
+    # Should also have parsed workspace variables (with prefix)
+    workspace_keys = [k for k in data_parsed.keys() 
+                      if k.startswith('__function_workspace__') 
+                      and k != '__function_workspace__']
+    
+    # Should have at least one parsed variable
+    assert len(workspace_keys) > 0, \
+        "Expected parsed workspace variables with __function_workspace__ prefix"
+    
+    # Verify the parsed variables are not just raw bytes
+    for key in workspace_keys:
+        var = data_parsed[key]
+        # The parsed variables should be numpy arrays or other processed types
+        # not the raw uint8 bytes
+        assert not (isinstance(var, np.ndarray) and var.dtype == np.uint8 
+                   and var.ndim == 2), \
+            f"Variable {key} appears to be unparsed raw bytes"
+
+
+def test_parse_function_workspace_backward_compat():
+    # Test backward compatibility - default behavior unchanged
+    fname = pjoin(test_data_path, 'parabola.mat')
+    
+    # Default behavior (parse_function_workspace not specified)
+    data_default = loadmat(fname)
+    
+    # Explicit False
+    data_no_parse = loadmat(fname, parse_function_workspace=False)
+    
+    # Both should give the same result (raw workspace bytes)
+    assert set(data_default.keys()) == set(data_no_parse.keys())
+    assert '__function_workspace__' in data_default
+    
+    # Should not have any parsed workspace variables by default
+    workspace_vars = [k for k in data_default.keys() 
+                      if k.startswith('__function_workspace__') 
+                      and k != '__function_workspace__']
+    assert len(workspace_vars) == 0, \
+        "Default behavior should not parse workspace (backward compatibility)"
