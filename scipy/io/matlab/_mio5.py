@@ -146,6 +146,92 @@ def _simplify_cells(d):
     return d
 
 
+def _parse_function_workspace(workspace_bytes, reader_params):
+    """
+    Parse the __function_workspace__ bytes to extract variables.
+    
+    The function workspace is a mini .mat file embedded in the main file.
+    It's stored as uint8 bytes but contains:
+    - 2 bytes to skip
+    - 2 bytes for endian test (version U2 bytes, S2 endian test)
+    - 4 bytes of padding
+    - Then standard miMATRIX entries
+    
+    Parameters
+    ----------
+    workspace_bytes : ndarray
+        The raw bytes from __function_workspace__
+    reader_params : dict
+        Parameters to pass to MatFile5Reader (struct_as_record, etc.)
+    
+    Returns
+    -------
+    workspace_vars : dict
+        Dictionary of variables extracted from the workspace
+    """
+    if workspace_bytes is None or workspace_bytes.size == 0:
+        return {}
+    
+    # Create a BytesIO stream from the workspace bytes
+    ws_stream = BytesIO(workspace_bytes.tobytes())
+    
+    # Skip first 2 bytes
+    ws_stream.seek(2)
+    
+    # Read endian test bytes (2 bytes)
+    mi = ws_stream.read(2)
+    if len(mi) < 2:
+        # Empty or corrupt workspace
+        return {}
+    
+    # Determine byte order from endian test
+    byte_order = '<' if mi == b'IM' else '>'
+    
+    # Skip 4 bytes of padding
+    ws_stream.read(4)
+    
+    # Create a new reader for the mini-mat format
+    # We need to create a minimal reader instance
+    workspace_reader = MatFile5Reader(
+        ws_stream,
+        byte_order=byte_order,
+        **reader_params
+    )
+    
+    # Initialize and read variables from the mini-mat format
+    workspace_reader.initialize_read()
+    workspace_vars = {'__globals__': []}
+    var_counter = 0
+    
+    try:
+        while not workspace_reader.end_of_stream():
+            hdr, next_position = workspace_reader.read_var_header()
+            name = 'None' if hdr.name is None else hdr.name.decode('latin1')
+            
+            # Unnamed variables get auto-generated names
+            if name == '':
+                name = f'var_{var_counter}'
+                var_counter += 1
+            
+            # Read the variable with processing enabled
+            try:
+                res = workspace_reader.read_var_array(hdr, process=True)
+            except Exception:
+                # If processing fails, try without processing
+                res = workspace_reader.read_var_array(hdr, process=False)
+            
+            workspace_reader.mat_stream.seek(next_position)
+            workspace_vars[name] = res
+            
+            if hdr.is_global:
+                workspace_vars['__globals__'].append(name)
+    except Exception:
+        # If we can't parse the workspace, return what we have so far
+        pass
+    
+    return workspace_vars
+
+
 class MatFile5Reader(MatFileReader):
     ''' Reader for Mat 5 mat files
     Adds the following attribute to base class
@@ -177,7 +263,8 @@ class MatFile5Reader(MatFileReader):
                  struct_as_record=True,
                  verify_compressed_data_integrity=True,
                  uint16_codec=None,
-                 simplify_cells=False):
+                 simplify_cells=False,
+                 parse_function_workspace=False):
         '''Initializer for matlab 5 file format reader
 
     %(matstream_arg)s
@@ -186,6 +273,10 @@ class MatFile5Reader(MatFileReader):
     uint16_codec : {None, string}
         Set codec to use for uint16 char arrays (e.g., 'utf-8').
         Use system default codec if None
+    parse_function_workspace : bool, optional
+        If True, parse the __function_workspace__ bytes to extract
+        variables stored in it. Default is False to maintain backward
+        compatibility.
         '''
         super().__init__(
             mat_stream,
@@ -197,6 +288,7 @@ class MatFile5Reader(MatFileReader):
             struct_as_record,
             verify_compressed_data_integrity,
             simplify_cells)
+        self.parse_function_workspace = parse_function_workspace
         # Set uint16 codec
         if not uint16_codec:
             uint16_codec = sys.getdefaultencoding()
@@ -344,6 +436,33 @@ class MatFile5Reader(MatFileReader):
                 variable_names.remove(name)
                 if len(variable_names) == 0:
                     break
+        
+        # Parse function workspace if requested
+        if self.parse_function_workspace and '__function_workspace__' in mdict:
+            reader_params = {
+                'mat_dtype': self.mat_dtype,
+                'squeeze_me': self.squeeze_me,
+                'chars_as_strings': self.chars_as_strings,
+                'struct_as_record': self.struct_as_record,
+                'verify_compressed_data_integrity': self.verify_compressed_data_integrity,
+                'uint16_codec': self.uint16_codec,
+                'simplify_cells': self.simplify_cells,
+            }
+            try:
+                workspace_vars = _parse_function_workspace(
+                    mdict['__function_workspace__'],
+                    reader_params
+                )
+                # Add parsed workspace variables with prefix
+                for key, value in workspace_vars.items():
+                    if key != '__globals__':
+                        prefixed_key = f'__function_workspace__{key}'
+                        mdict[prefixed_key] = value
+            except Exception as e:
+                warnings.warn(
+                    f'Could not parse __function_workspace__: {e}',
+                    MatReadWarning, stacklevel=2)
+        
         if self.simplify_cells:
             return _simplify_cells(mdict)
         else:

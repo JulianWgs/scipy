@@ -147,6 +147,13 @@ def loadmat(file_name, mdict=None, appendmat=True, *, spmatrix=True, **kwargs):
         set to other values such as 'ascii', 'latin1', and 'utf-8'. This
         parameter is relevant only for files stored as v6 and above, and not
         for files stored as v4.
+    parse_function_workspace : bool, optional
+        If True, parse the ``__function_workspace__`` bytes to extract
+        variables stored within it. The parsed variables are added to the
+        returned dictionary with keys prefixed by ``__function_workspace__``.
+        Default is False to maintain backward compatibility.
+        This is useful for .mat files containing MATLAB classes or function
+        handles where data may be stored in the function workspace.
 
     Returns
     -------
