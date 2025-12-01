@@ -187,33 +187,41 @@ def _parse_function_workspace(workspace_bytes, reader_params):
     
     # Determine byte order from endian test
     byte_order = '<' if mi == b'IM' else '>'
-    
+
     # Skip 4 bytes of padding
-    ws_stream.read(4)
-    
+    padding = ws_stream.read(4)
+    if len(padding) < 4:
+        # Insufficient padding bytes - corrupt workspace
+        return {}
+
     # Create a new reader for the mini-mat format
     # We need to create a minimal reader instance
     # Note: Always disable parse_function_workspace for nested readers
     # to avoid infinite recursion
     workspace_reader_params = reader_params.copy()
     workspace_reader_params['parse_function_workspace'] = False
-    
+
     workspace_reader = MatFile5Reader(
         ws_stream,
         byte_order=byte_order,
         **workspace_reader_params
     )
-    
+
     # Initialize and read variables from the mini-mat format
     workspace_reader.initialize_read()
     workspace_vars = {'__globals__': []}
     var_counter = 0
-    
+
     try:
         while not workspace_reader.end_of_stream():
             hdr, next_position = workspace_reader.read_var_header()
             # Decode name, using empty string for None
-            name = '' if hdr.name is None else hdr.name.decode('latin1')
+            # Handle potential UnicodeDecodeError from malformed data
+            try:
+                name = '' if hdr.name is None else hdr.name.decode('latin1')
+            except UnicodeDecodeError:
+                # Malformed variable name, use auto-generated name
+                name = f'malformed_var_{var_counter}'
 
             # Unnamed variables get auto-generated names
             if name == '':
