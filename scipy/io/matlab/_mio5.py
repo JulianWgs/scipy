@@ -71,6 +71,7 @@ http://blog.nephics.com/2019/08/28/better-loadmat-for-scipy/.
 
 import math
 import os
+import struct
 import time
 import sys
 import zlib
@@ -192,10 +193,15 @@ def _parse_function_workspace(workspace_bytes, reader_params):
     
     # Create a new reader for the mini-mat format
     # We need to create a minimal reader instance
+    # Note: Always disable parse_function_workspace for nested readers
+    # to avoid infinite recursion
+    workspace_reader_params = reader_params.copy()
+    workspace_reader_params['parse_function_workspace'] = False
+    
     workspace_reader = MatFile5Reader(
         ws_stream,
         byte_order=byte_order,
-        **reader_params
+        **workspace_reader_params
     )
     
     # Initialize and read variables from the mini-mat format
@@ -216,8 +222,8 @@ def _parse_function_workspace(workspace_bytes, reader_params):
             # Read the variable with processing enabled
             try:
                 res = workspace_reader.read_var_array(hdr, process=True)
-            except Exception:
-                # If processing fails, try without processing
+            except MatReadError:
+                # If processing fails with a known read error, try without processing
                 res = workspace_reader.read_var_array(hdr, process=False)
             
             workspace_reader.mat_stream.seek(next_position)
@@ -225,9 +231,14 @@ def _parse_function_workspace(workspace_bytes, reader_params):
             
             if hdr.is_global:
                 workspace_vars['__globals__'].append(name)
-    except Exception:
-        # If we can't parse the workspace, return what we have so far
-        pass
+    except (MatReadError, EOFError, struct.error) as e:
+        # If we can't parse the workspace due to known errors, return what we have
+        # MatReadError: MATLAB-specific read errors
+        # EOFError: Unexpected end of stream
+        # struct.error: Binary unpacking errors
+        warnings.warn(
+            f'Partial workspace parsing due to error: {e}',
+            MatReadWarning, stacklevel=3)
     
     return workspace_vars
 
@@ -458,7 +469,7 @@ class MatFile5Reader(MatFileReader):
                     if key != '__globals__':
                         prefixed_key = f'__function_workspace__{key}'
                         mdict[prefixed_key] = value
-            except Exception as e:
+            except (MatReadError, ValueError, EOFError) as e:
                 warnings.warn(
                     f'Could not parse __function_workspace__: {e}',
                     MatReadWarning, stacklevel=2)
