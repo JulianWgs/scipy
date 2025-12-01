@@ -212,23 +212,28 @@ def _parse_function_workspace(workspace_bytes, reader_params):
     try:
         while not workspace_reader.end_of_stream():
             hdr, next_position = workspace_reader.read_var_header()
-            name = 'None' if hdr.name is None else hdr.name.decode('latin1')
-            
+            # Decode name, using empty string for None
+            name = '' if hdr.name is None else hdr.name.decode('latin1')
+
             # Unnamed variables get auto-generated names
             if name == '':
                 name = f'var_{var_counter}'
                 var_counter += 1
-            
+
             # Read the variable with processing enabled
             try:
                 res = workspace_reader.read_var_array(hdr, process=True)
-            except MatReadError:
-                # If processing fails with a known read error, try without processing
+            except MatReadError as read_err:
+                # If processing fails with a read error, try without processing
+                # This can happen with complex MATLAB types that need special handling
+                warnings.warn(
+                    f'Variable "{name}" processing failed, reading as raw: {read_err}',
+                    MatReadWarning, stacklevel=3)
                 res = workspace_reader.read_var_array(hdr, process=False)
-            
+
             workspace_reader.mat_stream.seek(next_position)
             workspace_vars[name] = res
-            
+
             if hdr.is_global:
                 workspace_vars['__globals__'].append(name)
     except (MatReadError, EOFError, struct.error) as e:
